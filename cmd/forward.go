@@ -36,6 +36,7 @@ func NewForward() *cobra.Command {
 	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "do not actually send messages, just show how they would be sent")
 	cmd.Flags().BoolVar(&opts.Single, "single", false, "do not automatically detect and forward grouped messages")
 	cmd.Flags().BoolVar(&opts.Desc, "desc", false, "forward messages in reverse order for each input peer")
+	cmd.Flags().BoolVar(&opts.DropAuthor, "drop-author", false, "Drop original author information when forwarding in direct mode")
 
 	return cmd
 }

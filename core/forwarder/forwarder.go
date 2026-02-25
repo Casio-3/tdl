@@ -25,10 +25,11 @@ import (
 type Mode int
 
 type Options struct {
-	Pool     dcpool.Pool
-	Threads  int
-	Iter     Iter
-	Progress Progress
+	Pool       dcpool.Pool
+	Threads    int
+	Iter       Iter
+	Progress   Progress
+	DropAuthor bool // Drop original author information when forwarding in direct mode
 }
 
 type Forwarder struct {
@@ -260,7 +261,7 @@ func (f *Forwarder) forwardMessage(ctx context.Context, elem Elem, grouped ...*t
 					Silent:            elem.AsSilent(),
 					Background:        false,
 					WithMyScore:       false,
-					DropAuthor:        false,
+					DropAuthor:        f.opts.DropAuthor,
 					DropMediaCaptions: false,
 					Noforwards:        false,
 					FromPeer:          elem.From().InputPeer(),
