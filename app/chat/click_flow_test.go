@@ -210,4 +210,27 @@ func TestMediaCollectorForwardIDs(t *testing.T) {
 	if len(mediaOnly) != 2 || mediaOnly[0] != 102 || mediaOnly[1] != 104 {
 		t.Fatalf("unexpected media_only ids: %v", mediaOnly)
 	}
+
+	plan := m.forwardPlan(all)
+	if len(plan) != 4 {
+		t.Fatalf("unexpected plan length: %d", len(plan))
+	}
+	if plan[0].ID != 101 || plan[0].Noforwards {
+		t.Fatalf("unexpected plan[0]: %+v", plan[0])
+	}
+	if plan[1].ID != 102 || plan[1].Type != "photo" {
+		t.Fatalf("unexpected plan[1]: %+v", plan[1])
+	}
+}
+
+func TestRestrictedMessageIDs(t *testing.T) {
+	plan := []flowForwardPlanEntry{
+		{ID: 1, Noforwards: false},
+		{ID: 2, Noforwards: true},
+		{ID: 3, Noforwards: true},
+	}
+	ids := restrictedMessageIDs(plan)
+	if len(ids) != 2 || ids[0] != 2 || ids[1] != 3 {
+		t.Fatalf("unexpected restricted ids: %v", ids)
+	}
 }

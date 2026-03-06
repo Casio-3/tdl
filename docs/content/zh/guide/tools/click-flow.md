@@ -110,3 +110,4 @@ tdl chat click flow -c BOT_CHAT --flow flow.yaml \
 - `forward` 可选：
   - `media_only`：仅转发本次流程中采集到的媒体消息
   - `all_messages`：转发本次流程中采集到的所有入站消息
+  - 转发前会预检查受保护消息（`noforwards=true`）；若命中会返回 `forward_restricted`，并在 JSON 报告中给出候选 ID 与受限 ID，提示改用 clone 模式。

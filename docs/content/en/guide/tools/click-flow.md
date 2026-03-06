@@ -110,3 +110,4 @@ tdl chat click flow -c BOT_CHAT --flow flow.yaml \
 - `forward`:
   - `media_only`: forward only media messages captured during this flow
   - `all_messages`: forward all inbound messages captured during this flow
+  - Protected messages (`noforwards=true`) are detected before forwarding; flow returns `forward_restricted` with candidate IDs and restricted IDs in JSON report, and suggests clone mode.

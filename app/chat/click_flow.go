@@ -266,6 +266,17 @@ func ClickFlow(ctx context.Context, c *telegram.Client, kvd storage.Storage, opt
 
 		ids := mediaCollector.forwardIDs(report.Forward.Mode)
 		report.Forward.Attempted = len(ids)
+		report.Forward.Plan = mediaCollector.forwardPlan(ids)
+		report.Forward.RestrictedIDs = restrictedMessageIDs(report.Forward.Plan)
+		printForwardPlan(report.Forward)
+		if len(report.Forward.RestrictedIDs) > 0 {
+			report.Forward.Hint = "some messages are protected (noforwards=true); use tdl forward --mode clone for these message IDs"
+			return writeFlowErrorReport(report, opts.Output, flowError{
+				category: "forward_restricted",
+				err: fmt.Errorf("CHAT_FORWARDS_RESTRICTED for ids=%v; these require clone mode",
+					report.Forward.RestrictedIDs),
+			})
+		}
 		if len(ids) > 0 {
 			forwardedIDs, ferr := forwardMessages(ctx, c, peer, toPeer, ids)
 			report.Forward.Forwarded = len(forwardedIDs)
@@ -791,6 +802,7 @@ type mediaCollector struct {
 	baseMaxID int
 	mediaData map[int]flowMediaEntry
 	allIDs    map[int]struct{}
+	allData   map[int]flowForwardPlanEntry
 }
 
 func newMediaCollector(baseMaxID int) *mediaCollector {
@@ -798,6 +810,7 @@ func newMediaCollector(baseMaxID int) *mediaCollector {
 		baseMaxID: baseMaxID,
 		mediaData: map[int]flowMediaEntry{},
 		allIDs:    map[int]struct{}{},
+		allData:   map[int]flowForwardPlanEntry{},
 	}
 }
 
@@ -807,17 +820,26 @@ func (m *mediaCollector) consume(messages []*tg.Message) {
 			continue
 		}
 		m.allIDs[msg.ID] = struct{}{}
+		plan := flowForwardPlanEntry{
+			ID:         msg.ID,
+			Type:       "text",
+			Noforwards: msg.Noforwards,
+		}
 		if msg.Media == nil {
+			m.allData[msg.ID] = plan
 			continue
 		}
 		if _, ok := m.mediaData[msg.ID]; ok {
 			continue
 		}
+		typ := mediaType(msg.Media)
 		m.mediaData[msg.ID] = flowMediaEntry{
 			ID:   msg.ID,
 			Date: msg.Date,
-			Type: mediaType(msg.Media),
+			Type: typ,
 		}
+		plan.Type = typ
+		m.allData[msg.ID] = plan
 	}
 }
 
@@ -881,6 +903,49 @@ func (m *mediaCollector) forwardIDs(mode string) []int {
 	}
 }
 
+func (m *mediaCollector) forwardPlan(ids []int) []flowForwardPlanEntry {
+	out := make([]flowForwardPlanEntry, 0, len(ids))
+	for _, id := range ids {
+		if p, ok := m.allData[id]; ok {
+			out = append(out, p)
+			continue
+		}
+		out = append(out, flowForwardPlanEntry{
+			ID:   id,
+			Type: "unknown",
+		})
+	}
+	return out
+}
+
+func restrictedMessageIDs(plan []flowForwardPlanEntry) []int {
+	out := make([]int, 0, len(plan))
+	for _, p := range plan {
+		if p.Noforwards {
+			out = append(out, p.ID)
+		}
+	}
+	return out
+}
+
+func printForwardPlan(f flowReportForward) {
+	if !f.Enabled {
+		return
+	}
+	fmt.Printf("Forward plan: mode=%s to=%s candidates=%d\n", f.Mode, f.To, len(f.Plan))
+	if len(f.Plan) == 0 {
+		return
+	}
+	ids := make([]int, 0, len(f.Plan))
+	for _, p := range f.Plan {
+		ids = append(ids, p.ID)
+	}
+	fmt.Printf("Forward candidate IDs: %v\n", ids)
+	if len(f.RestrictedIDs) > 0 {
+		fmt.Printf("Forward restricted IDs (require clone): %v\n", f.RestrictedIDs)
+	}
+}
+
 type flowReportMedia struct {
 	Total     int              `json:"total"`
 	Types     map[string]int   `json:"types"`
@@ -893,12 +958,21 @@ type flowReportMedia struct {
 }
 
 type flowReportForward struct {
-	Enabled   bool   `json:"enabled"`
-	To        string `json:"to,omitempty"`
-	Mode      string `json:"mode,omitempty"`
-	Attempted int    `json:"attempted"`
-	Forwarded int    `json:"forwarded"`
-	IDs       []int  `json:"ids,omitempty"`
+	Enabled       bool                   `json:"enabled"`
+	To            string                 `json:"to,omitempty"`
+	Mode          string                 `json:"mode,omitempty"`
+	Attempted     int                    `json:"attempted"`
+	Forwarded     int                    `json:"forwarded"`
+	IDs           []int                  `json:"ids,omitempty"`
+	Plan          []flowForwardPlanEntry `json:"plan,omitempty"`
+	RestrictedIDs []int                  `json:"restricted_ids,omitempty"`
+	Hint          string                 `json:"hint,omitempty"`
+}
+
+type flowForwardPlanEntry struct {
+	ID         int    `json:"id"`
+	Type       string `json:"type"`
+	Noforwards bool   `json:"noforwards"`
 }
 
 func mediaType(m tg.MessageMediaClass) string {
