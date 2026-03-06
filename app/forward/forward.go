@@ -29,14 +29,15 @@ import (
 )
 
 type Options struct {
-	From   []string
-	To     string
-	Edit   string
-	Mode   forwarder.Mode
-	Silent bool
-	DryRun bool
-	Single bool
-	Desc   bool
+	From      []string
+	To        string
+	Edit      string
+	Mode      forwarder.Mode
+	Silent    bool
+	DryRun    bool
+	Single    bool
+	Desc      bool
+	DropAuthor bool // Drop original author information when forwarding in direct mode
 }
 
 func Run(ctx context.Context, c *telegram.Client, kvd storage.Storage, opts Options) (rerr error) {
@@ -83,7 +84,7 @@ func Run(ctx context.Context, c *telegram.Client, kvd storage.Storage, opts Opti
 	prog.EnablePS(ctx, fwProgress)
 
 	fw := forwarder.New(forwarder.Options{
-		Pool: pool,
+		Pool:       pool,
 		Iter: newIter(iterOptions{
 			manager: manager,
 			pool:    pool,
@@ -96,8 +97,9 @@ func Run(ctx context.Context, c *telegram.Client, kvd storage.Storage, opts Opti
 			grouped: !opts.Single,
 			delay:   viper.GetDuration(consts.FlagDelay),
 		}),
-		Progress: newProgress(fwProgress),
-		Threads:  viper.GetInt(consts.FlagThreads),
+		Progress:   newProgress(fwProgress),
+		Threads:    viper.GetInt(consts.FlagThreads),
+		DropAuthor: opts.DropAuthor,
 	})
 
 	go fwProgress.Render()
