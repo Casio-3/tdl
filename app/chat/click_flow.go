@@ -17,7 +17,10 @@ import (
 	"github.com/gotd/td/tg"
 	"gopkg.in/yaml.v3"
 
+	"github.com/iyear/tdl/core/dcpool"
+	"github.com/iyear/tdl/core/forwarder"
 	"github.com/iyear/tdl/core/storage"
+	"github.com/iyear/tdl/core/tclient"
 	"github.com/iyear/tdl/core/util/tutil"
 )
 
@@ -76,6 +79,10 @@ type FlowConfig struct {
 type FlowForward struct {
 	To   string `yaml:"to"`
 	Mode string `yaml:"mode"`
+	// Fallback controls behavior when restricted messages are detected.
+	// none (default): return forward_restricted error.
+	// clone: clone-forward by download/re-upload.
+	Fallback string `yaml:"fallback"`
 }
 
 type FlowSelector struct {
@@ -178,8 +185,9 @@ type compiledSelector struct {
 }
 
 type compiledForward struct {
-	to   string
-	mode string
+	to       string
+	mode     string
+	fallback string
 }
 
 type selectedButton struct {
@@ -233,9 +241,10 @@ func ClickFlow(ctx context.Context, c *telegram.Client, kvd storage.Storage, opt
 	}
 	report.Media.Types = map[string]int{}
 	report.Forward = flowReportForward{
-		Enabled: fwd.to != "",
-		To:      fwd.to,
-		Mode:    fwd.mode,
+		Enabled:  fwd.to != "",
+		To:       fwd.to,
+		Mode:     fwd.mode,
+		Fallback: fwd.fallback,
 	}
 
 	baseline, err := fetchSnapshot(ctx, c, peer)
@@ -270,12 +279,28 @@ func ClickFlow(ctx context.Context, c *telegram.Client, kvd storage.Storage, opt
 		report.Forward.RestrictedIDs = restrictedMessageIDs(report.Forward.Plan)
 		printForwardPlan(report.Forward)
 		if len(report.Forward.RestrictedIDs) > 0 {
-			report.Forward.Hint = "some messages are protected (noforwards=true); use tdl forward --mode clone for these message IDs"
-			return writeFlowErrorReport(report, opts.Output, flowError{
-				category: "forward_restricted",
-				err: fmt.Errorf("CHAT_FORWARDS_RESTRICTED for ids=%v; these require clone mode",
-					report.Forward.RestrictedIDs),
-			})
+			report.Forward.Hint = "some messages are protected (noforwards=true); set forward.fallback=clone to clone-forward them"
+			if report.Forward.Fallback != "clone" {
+				return writeFlowErrorReport(report, opts.Output, flowError{
+					category: "forward_restricted",
+					err: fmt.Errorf("CHAT_FORWARDS_RESTRICTED for ids=%v; these require clone mode",
+						report.Forward.RestrictedIDs),
+				})
+			}
+			msgs, err := mediaCollector.messagesByID(ids)
+			if err != nil {
+				return writeFlowErrorReport(report, opts.Output, flowError{
+					category: "forward_clone_prepare",
+					err:      err,
+				})
+			}
+			forwardedIDs, ferr := cloneForwardMessages(ctx, c, peer, toPeer, msgs)
+			report.Forward.Forwarded = len(forwardedIDs)
+			report.Forward.IDs = forwardedIDs
+			if ferr.err != nil {
+				return writeFlowErrorReport(report, opts.Output, ferr)
+			}
+			goto reportDone
 		}
 		if len(ids) > 0 {
 			forwardedIDs, ferr := forwardMessages(ctx, c, peer, toPeer, ids)
@@ -287,6 +312,7 @@ func ClickFlow(ctx context.Context, c *telegram.Client, kvd storage.Storage, opt
 		}
 	}
 
+reportDone:
 	if err = writeFlowReport(report, opts.Output); err != nil {
 		return err
 	}
@@ -522,6 +548,12 @@ func (c *FlowConfig) Validate() error {
 	if c.Forward.Mode != "media_only" && c.Forward.Mode != "all_messages" {
 		return fmt.Errorf("invalid forward.mode: %s", c.Forward.Mode)
 	}
+	if c.Forward.Fallback == "" {
+		c.Forward.Fallback = "none"
+	}
+	if c.Forward.Fallback != "none" && c.Forward.Fallback != "clone" {
+		return fmt.Errorf("invalid forward.fallback: %s", c.Forward.Fallback)
+	}
 	if c.StopConditions.IdleRounds < 0 {
 		return fmt.Errorf("stop_conditions.idle_rounds must be >= 0")
 	}
@@ -530,17 +562,24 @@ func (c *FlowConfig) Validate() error {
 
 func resolveForward(cfg FlowForward, opts ClickFlowOptions) (compiledForward, error) {
 	out := compiledForward{
-		to:   strings.TrimSpace(cfg.To),
-		mode: cfg.Mode,
+		to:       strings.TrimSpace(cfg.To),
+		mode:     cfg.Mode,
+		fallback: cfg.Fallback,
 	}
 	if out.mode == "" {
 		out.mode = "media_only"
+	}
+	if out.fallback == "" {
+		out.fallback = "none"
 	}
 	if strings.TrimSpace(opts.ForwardTo) != "" {
 		out.to = strings.TrimSpace(opts.ForwardTo)
 	}
 	if out.mode != "media_only" && out.mode != "all_messages" {
 		return out, fmt.Errorf("invalid forward mode: %s", out.mode)
+	}
+	if out.fallback != "none" && out.fallback != "clone" {
+		return out, fmt.Errorf("invalid forward fallback: %s", out.fallback)
 	}
 	return out, nil
 }
@@ -803,6 +842,7 @@ type mediaCollector struct {
 	mediaData map[int]flowMediaEntry
 	allIDs    map[int]struct{}
 	allData   map[int]flowForwardPlanEntry
+	allMsg    map[int]*tg.Message
 }
 
 func newMediaCollector(baseMaxID int) *mediaCollector {
@@ -811,6 +851,7 @@ func newMediaCollector(baseMaxID int) *mediaCollector {
 		mediaData: map[int]flowMediaEntry{},
 		allIDs:    map[int]struct{}{},
 		allData:   map[int]flowForwardPlanEntry{},
+		allMsg:    map[int]*tg.Message{},
 	}
 }
 
@@ -820,6 +861,9 @@ func (m *mediaCollector) consume(messages []*tg.Message) {
 			continue
 		}
 		m.allIDs[msg.ID] = struct{}{}
+		if _, ok := m.allMsg[msg.ID]; !ok {
+			m.allMsg[msg.ID] = msg
+		}
 		plan := flowForwardPlanEntry{
 			ID:         msg.ID,
 			Type:       "text",
@@ -918,6 +962,18 @@ func (m *mediaCollector) forwardPlan(ids []int) []flowForwardPlanEntry {
 	return out
 }
 
+func (m *mediaCollector) messagesByID(ids []int) ([]*tg.Message, error) {
+	out := make([]*tg.Message, 0, len(ids))
+	for _, id := range ids {
+		msg, ok := m.allMsg[id]
+		if !ok {
+			return nil, fmt.Errorf("message %d not found in collector", id)
+		}
+		out = append(out, msg)
+	}
+	return out, nil
+}
+
 func restrictedMessageIDs(plan []flowForwardPlanEntry) []int {
 	out := make([]int, 0, len(plan))
 	for _, p := range plan {
@@ -932,7 +988,7 @@ func printForwardPlan(f flowReportForward) {
 	if !f.Enabled {
 		return
 	}
-	fmt.Printf("Forward plan: mode=%s to=%s candidates=%d\n", f.Mode, f.To, len(f.Plan))
+	fmt.Printf("Forward plan: mode=%s fallback=%s to=%s candidates=%d\n", f.Mode, f.Fallback, f.To, len(f.Plan))
 	if len(f.Plan) == 0 {
 		return
 	}
@@ -961,6 +1017,7 @@ type flowReportForward struct {
 	Enabled       bool                   `json:"enabled"`
 	To            string                 `json:"to,omitempty"`
 	Mode          string                 `json:"mode,omitempty"`
+	Fallback      string                 `json:"fallback,omitempty"`
 	Attempted     int                    `json:"attempted"`
 	Forwarded     int                    `json:"forwarded"`
 	IDs           []int                  `json:"ids,omitempty"`
@@ -1029,6 +1086,92 @@ func forwardMessages(ctx context.Context, c *telegram.Client, from peers.Peer, t
 	return forwarded, flowError{}
 }
 
+type cloneIter struct {
+	idx   int
+	elems []forwarder.Elem
+}
+
+func (c *cloneIter) Next(_ context.Context) bool {
+	if c.idx >= len(c.elems) {
+		return false
+	}
+	c.idx++
+	return true
+}
+
+func (c *cloneIter) Value() forwarder.Elem { return c.elems[c.idx-1] }
+func (c *cloneIter) Err() error            { return nil }
+
+type cloneElem struct {
+	from peers.Peer
+	to   peers.Peer
+	msg  *tg.Message
+}
+
+func (e cloneElem) Mode() forwarder.Mode { return forwarder.ModeClone }
+func (e cloneElem) From() peers.Peer     { return e.from }
+func (e cloneElem) Msg() *tg.Message     { return e.msg }
+func (e cloneElem) To() peers.Peer       { return e.to }
+func (e cloneElem) Thread() int          { return 0 }
+func (e cloneElem) AsSilent() bool       { return false }
+func (e cloneElem) AsDryRun() bool       { return false }
+func (e cloneElem) AsGrouped() bool      { return false }
+
+type cloneProgress struct {
+	errs []error
+}
+
+func (p *cloneProgress) OnAdd(_ forwarder.Elem) {}
+
+func (p *cloneProgress) OnClone(_ forwarder.Elem, _ forwarder.ProgressState) {}
+
+func (p *cloneProgress) OnDone(_ forwarder.Elem, err error) {
+	if err != nil {
+		p.errs = append(p.errs, err)
+	}
+}
+
+func cloneForwardMessages(
+	ctx context.Context,
+	c *telegram.Client,
+	from peers.Peer,
+	to peers.Peer,
+	msgs []*tg.Message,
+) ([]int, flowError) {
+	if len(msgs) == 0 {
+		return nil, flowError{}
+	}
+
+	ids := make([]int, 0, len(msgs))
+	elems := make([]forwarder.Elem, 0, len(msgs))
+	for _, m := range msgs {
+		ids = append(ids, m.ID)
+		elems = append(elems, cloneElem{
+			from: from,
+			to:   to,
+			msg:  m,
+		})
+	}
+
+	pool := dcpool.NewPool(c, 1, tclient.NewDefaultMiddlewares(ctx, 0)...)
+	defer func() { _ = pool.Close() }()
+
+	progress := &cloneProgress{}
+	fw := forwarder.New(forwarder.Options{
+		Pool:     pool,
+		Threads:  4,
+		Iter:     &cloneIter{elems: elems},
+		Progress: progress,
+	})
+	if err := fw.Forward(ctx); err != nil {
+		return nil, flowError{category: "forward_clone", err: err}
+	}
+	if len(progress.errs) > 0 {
+		return nil, flowError{category: "forward_clone", err: progress.errs[0]}
+	}
+	return ids, flowError{}
+}
+
 func maxMessageID(messages []*tg.Message) int {
 	maxID := 0
 	for _, m := range messages {
@@ -1070,7 +1213,7 @@ func printFlowSummary(r *flowReport, output string) {
 	}
 	fmt.Printf("Media types: %v\n", r.Media.Types)
 	if r.Forward.Enabled {
-		fmt.Printf("Forward: to=%s mode=%s attempted=%d forwarded=%d\n",
-			r.Forward.To, r.Forward.Mode, r.Forward.Attempted, r.Forward.Forwarded)
+		fmt.Printf("Forward: to=%s mode=%s fallback=%s attempted=%d forwarded=%d\n",
+			r.Forward.To, r.Forward.Mode, r.Forward.Fallback, r.Forward.Attempted, r.Forward.Forwarded)
 	}
 }

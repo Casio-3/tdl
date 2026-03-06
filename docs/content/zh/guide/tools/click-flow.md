@@ -58,6 +58,7 @@ runtime:
 forward:
   to: "3786555826"
   mode: media_only # media_only | all_messages
+  fallback: none # none | clone
 ```
 
 ## 选择器类型
@@ -110,4 +111,7 @@ tdl chat click flow -c BOT_CHAT --flow flow.yaml \
 - `forward` 可选：
   - `media_only`：仅转发本次流程中采集到的媒体消息
   - `all_messages`：转发本次流程中采集到的所有入站消息
-  - 转发前会预检查受保护消息（`noforwards=true`）；若命中会返回 `forward_restricted`，并在 JSON 报告中给出候选 ID 与受限 ID，提示改用 clone 模式。
+  - `fallback`：
+    - `none`（默认）：若命中受保护消息（`noforwards=true`），直接返回 `forward_restricted`
+    - `clone`：自动走 clone 转发（下载再发送），可绕过官方转发限制但速度更慢
+  - 转发前会预检查受保护消息，并在 JSON 报告里输出候选 ID 与受限 ID。

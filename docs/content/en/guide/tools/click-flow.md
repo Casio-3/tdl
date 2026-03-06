@@ -58,6 +58,7 @@ runtime:
 forward:
   to: "3786555826"
   mode: media_only # media_only | all_messages
+  fallback: none # none | clone
 ```
 
 ## Selector Types
@@ -110,4 +111,7 @@ tdl chat click flow -c BOT_CHAT --flow flow.yaml \
 - `forward`:
   - `media_only`: forward only media messages captured during this flow
   - `all_messages`: forward all inbound messages captured during this flow
-  - Protected messages (`noforwards=true`) are detected before forwarding; flow returns `forward_restricted` with candidate IDs and restricted IDs in JSON report, and suggests clone mode.
+  - `fallback`:
+    - `none` (default): if protected messages (`noforwards=true`) are present, return `forward_restricted`
+    - `clone`: automatically use clone forwarding (download + re-send), which is slower but can bypass forward restriction
+  - Protected messages are checked before forwarding, and candidate/restricted IDs are included in the JSON report.

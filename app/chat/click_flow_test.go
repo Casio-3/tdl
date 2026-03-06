@@ -34,13 +34,17 @@ func TestFlowConfigValidateForwardMode(t *testing.T) {
 			Loop: []string{"next"},
 		},
 		Forward: FlowForward{
-			To:   "3786555826",
-			Mode: "all_messages",
+			To:       "3786555826",
+			Mode:     "all_messages",
+			Fallback: "clone",
 		},
 		MediaScope: FlowMediaScope{Mode: "since_start"},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() unexpected error: %v", err)
+	}
+	if cfg.Forward.Fallback != "clone" {
+		t.Fatalf("expected fallback clone, got %s", cfg.Forward.Fallback)
 	}
 }
 
@@ -62,6 +66,28 @@ func TestFlowConfigValidateInvalidForwardMode(t *testing.T) {
 	}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() expected error for invalid forward mode, got nil")
+	}
+}
+
+func TestFlowConfigValidateInvalidForwardFallback(t *testing.T) {
+	cfg := &FlowConfig{
+		Target: targetLatestInboundButton,
+		Selectors: []FlowSelector{
+			{ID: "next", Text: "Next"},
+		},
+		Actions: FlowActions{
+			Mode: actionModeLoop,
+			Loop: []string{"next"},
+		},
+		Forward: FlowForward{
+			To:       "3786555826",
+			Mode:     "media_only",
+			Fallback: "bad_fallback",
+		},
+		MediaScope: FlowMediaScope{Mode: "since_start"},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() expected error for invalid forward fallback, got nil")
 	}
 }
 
@@ -147,13 +173,14 @@ func TestClickFlowOptionsValidate(t *testing.T) {
 
 func TestResolveForward(t *testing.T) {
 	fwd, err := resolveForward(FlowForward{
-		To:   "1001",
-		Mode: "media_only",
+		To:       "1001",
+		Mode:     "media_only",
+		Fallback: "clone",
 	}, ClickFlowOptions{})
 	if err != nil {
 		t.Fatalf("resolveForward() error: %v", err)
 	}
-	if fwd.to != "1001" || fwd.mode != "media_only" {
+	if fwd.to != "1001" || fwd.mode != "media_only" || fwd.fallback != "clone" {
 		t.Fatalf("unexpected forward: %+v", fwd)
 	}
 
@@ -179,6 +206,9 @@ func TestResolveForwardDefaultsAndInvalidMode(t *testing.T) {
 	if fwd.mode != "media_only" {
 		t.Fatalf("expected default mode media_only, got %s", fwd.mode)
 	}
+	if fwd.fallback != "none" {
+		t.Fatalf("expected default fallback none, got %s", fwd.fallback)
+	}
 
 	_, err = resolveForward(FlowForward{
 		To:   "1001",
@@ -186,6 +216,15 @@ func TestResolveForwardDefaultsAndInvalidMode(t *testing.T) {
 	}, ClickFlowOptions{})
 	if err == nil {
 		t.Fatal("resolveForward() expected invalid mode error, got nil")
+	}
+
+	_, err = resolveForward(FlowForward{
+		To:       "1001",
+		Mode:     "media_only",
+		Fallback: "invalid",
+	}, ClickFlowOptions{})
+	if err == nil {
+		t.Fatal("resolveForward() expected invalid fallback error, got nil")
 	}
 }
 
