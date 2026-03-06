@@ -199,6 +199,7 @@ func NewChatClickFlow() *cobra.Command {
 	cmd.Flags().StringVarP(&opts.Chat, "chat", "c", "", "bot chat id or username")
 	cmd.Flags().StringVar(&opts.Flow, "flow", "", "YAML flow config path")
 	cmd.Flags().StringVarP(&opts.Output, "output", "o", "tdl-click-flow.json", "flow JSON report path")
+	cmd.Flags().StringVar(&opts.ForwardTo, "forward-to", "", "target peer id/username for forwarding flow results")
 	cmd.Flags().IntVar(&opts.MaxSteps, "max-steps", 0, "override maximum click steps (0 means use flow/default)")
 	cmd.Flags().DurationVar(&opts.Timeout, "timeout", 0, "override total flow timeout (0 means use flow/default)")
 	cmd.Flags().DurationVar(&opts.PollInterval, "poll-interval", 0, "override poll interval between steps (0 means use flow/default)")

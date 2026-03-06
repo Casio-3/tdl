@@ -15,7 +15,8 @@ weight: 40
 tdl chat click flow \
   -c BOT_CHAT \
   --flow flow.yaml \
-  -o flow-report.json
+  -o flow-report.json \
+  --forward-to 3786555826
 {{< /command >}}
 
 输出：
@@ -53,6 +54,10 @@ runtime:
   max_steps: 30
   timeout: 3m
   poll_interval: 1s
+
+forward:
+  to: "3786555826"
+  mode: media_only # media_only | all_messages
 ```
 
 ## 选择器类型
@@ -102,3 +107,6 @@ tdl chat click flow -c BOT_CHAT --flow flow.yaml \
 - `target` 可选：
   - `latest_inbound_button_message`
   - `latest_inbound_message`
+- `forward` 可选：
+  - `media_only`：仅转发本次流程中采集到的媒体消息
+  - `all_messages`：转发本次流程中采集到的所有入站消息

@@ -38,3 +38,7 @@ runtime:
   max_steps: 20
   timeout: 3m
   poll_interval: 1s
+
+forward:
+  to: "3786555826"
+  mode: media_only

@@ -48,3 +48,11 @@ func TestChatClickFlowCommandValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestChatClickFlowForwardFlagExists(t *testing.T) {
+	c := NewChatClickFlow()
+	flag := c.Flags().Lookup("forward-to")
+	if flag == nil {
+		t.Fatal("expected --forward-to flag to exist")
+	}
+}

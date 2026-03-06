@@ -15,7 +15,8 @@ Use this when a bot keeps updating messages/buttons and you want to automate unt
 tdl chat click flow \
   -c BOT_CHAT \
   --flow flow.yaml \
-  -o flow-report.json
+  -o flow-report.json \
+  --forward-to 3786555826
 {{< /command >}}
 
 Output:
@@ -53,6 +54,10 @@ runtime:
   max_steps: 30
   timeout: 3m
   poll_interval: 1s
+
+forward:
+  to: "3786555826"
+  mode: media_only # media_only | all_messages
 ```
 
 ## Selector Types
@@ -102,3 +107,6 @@ tdl chat click flow -c BOT_CHAT --flow flow.yaml \
 - `target`:
   - `latest_inbound_button_message`
   - `latest_inbound_message`
+- `forward`:
+  - `media_only`: forward only media messages captured during this flow
+  - `all_messages`: forward all inbound messages captured during this flow

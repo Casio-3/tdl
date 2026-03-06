@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,6 +34,7 @@ type ClickFlowOptions struct {
 	Chat         string
 	Flow         string
 	Output       string
+	ForwardTo    string
 	MaxSteps     int
 	Timeout      time.Duration
 	PollInterval time.Duration
@@ -65,8 +68,14 @@ type FlowConfig struct {
 	Actions        FlowActions        `yaml:"actions"`
 	StopConditions FlowStopConditions `yaml:"stop_conditions"`
 	MediaScope     FlowMediaScope     `yaml:"media_scope"`
+	Forward        FlowForward        `yaml:"forward"`
 	BotProfile     string             `yaml:"bot_profile"`
 	Runtime        FlowRuntime        `yaml:"runtime"`
+}
+
+type FlowForward struct {
+	To   string `yaml:"to"`
+	Mode string `yaml:"mode"`
 }
 
 type FlowSelector struct {
@@ -160,11 +169,17 @@ type flowReport struct {
 	BaselineMaxID int               `json:"baseline_max_id"`
 	Steps         []flowStepReport  `json:"steps"`
 	Media         flowReportMedia   `json:"media"`
+	Forward       flowReportForward `json:"forward"`
 }
 
 type compiledSelector struct {
 	raw   FlowSelector
 	regex *regexp.Regexp
+}
+
+type compiledForward struct {
+	to   string
+	mode string
 }
 
 type selectedButton struct {
@@ -186,6 +201,10 @@ func ClickFlow(ctx context.Context, c *telegram.Client, kvd storage.Storage, opt
 	}
 
 	runtime, err := resolveRuntime(cfg.Runtime, opts)
+	if err != nil {
+		return err
+	}
+	fwd, err := resolveForward(cfg.Forward, opts)
 	if err != nil {
 		return err
 	}
@@ -213,6 +232,11 @@ func ClickFlow(ctx context.Context, c *telegram.Client, kvd storage.Storage, opt
 		},
 	}
 	report.Media.Types = map[string]int{}
+	report.Forward = flowReportForward{
+		Enabled: fwd.to != "",
+		To:      fwd.to,
+		Mode:    fwd.mode,
+	}
 
 	baseline, err := fetchSnapshot(ctx, c, peer)
 	if err != nil {
@@ -230,6 +254,28 @@ func ClickFlow(ctx context.Context, c *telegram.Client, kvd storage.Storage, opt
 	report.StopReason = stopReason
 	report.FinishedAt = time.Now()
 	report.Media = mediaCollector.report()
+
+	if report.Forward.Enabled {
+		toPeer, err := tutil.GetInputPeer(ctx, manager, report.Forward.To)
+		if err != nil {
+			return writeFlowErrorReport(report, opts.Output, flowError{
+				category: "forward_resolve_peer",
+				err:      err,
+			})
+		}
+
+		ids := mediaCollector.forwardIDs(report.Forward.Mode)
+		report.Forward.Attempted = len(ids)
+		if len(ids) > 0 {
+			forwardedIDs, ferr := forwardMessages(ctx, c, peer, toPeer, ids)
+			report.Forward.Forwarded = len(forwardedIDs)
+			report.Forward.IDs = forwardedIDs
+			if ferr.err != nil {
+				return writeFlowErrorReport(report, opts.Output, ferr)
+			}
+		}
+	}
+
 	if err = writeFlowReport(report, opts.Output); err != nil {
 		return err
 	}
@@ -459,10 +505,33 @@ func (c *FlowConfig) Validate() error {
 	if c.MediaScope.Mode != "since_start" {
 		return fmt.Errorf("invalid media_scope.mode: %s", c.MediaScope.Mode)
 	}
+	if c.Forward.Mode == "" {
+		c.Forward.Mode = "media_only"
+	}
+	if c.Forward.Mode != "media_only" && c.Forward.Mode != "all_messages" {
+		return fmt.Errorf("invalid forward.mode: %s", c.Forward.Mode)
+	}
 	if c.StopConditions.IdleRounds < 0 {
 		return fmt.Errorf("stop_conditions.idle_rounds must be >= 0")
 	}
 	return nil
+}
+
+func resolveForward(cfg FlowForward, opts ClickFlowOptions) (compiledForward, error) {
+	out := compiledForward{
+		to:   strings.TrimSpace(cfg.To),
+		mode: cfg.Mode,
+	}
+	if out.mode == "" {
+		out.mode = "media_only"
+	}
+	if strings.TrimSpace(opts.ForwardTo) != "" {
+		out.to = strings.TrimSpace(opts.ForwardTo)
+	}
+	if out.mode != "media_only" && out.mode != "all_messages" {
+		return out, fmt.Errorf("invalid forward mode: %s", out.mode)
+	}
+	return out, nil
 }
 
 func compileSelectors(in []FlowSelector) (map[string]compiledSelector, error) {
@@ -720,25 +789,31 @@ func shouldTimeout(start time.Time, timeout time.Duration) bool {
 
 type mediaCollector struct {
 	baseMaxID int
-	data      map[int]flowMediaEntry
+	mediaData map[int]flowMediaEntry
+	allIDs    map[int]struct{}
 }
 
 func newMediaCollector(baseMaxID int) *mediaCollector {
 	return &mediaCollector{
 		baseMaxID: baseMaxID,
-		data:      map[int]flowMediaEntry{},
+		mediaData: map[int]flowMediaEntry{},
+		allIDs:    map[int]struct{}{},
 	}
 }
 
 func (m *mediaCollector) consume(messages []*tg.Message) {
 	for _, msg := range messages {
-		if msg.ID <= m.baseMaxID || msg.Out || msg.Media == nil {
+		if msg.ID <= m.baseMaxID || msg.Out {
 			continue
 		}
-		if _, ok := m.data[msg.ID]; ok {
+		m.allIDs[msg.ID] = struct{}{}
+		if msg.Media == nil {
 			continue
 		}
-		m.data[msg.ID] = flowMediaEntry{
+		if _, ok := m.mediaData[msg.ID]; ok {
+			continue
+		}
+		m.mediaData[msg.ID] = flowMediaEntry{
 			ID:   msg.ID,
 			Date: msg.Date,
 			Type: mediaType(msg.Media),
@@ -747,17 +822,17 @@ func (m *mediaCollector) consume(messages []*tg.Message) {
 }
 
 func (m *mediaCollector) total() int {
-	return len(m.data)
+	return len(m.mediaData)
 }
 
 func (m *mediaCollector) report() flowReportMedia {
-	ids := make([]int, 0, len(m.data))
-	entries := make([]flowMediaEntry, 0, len(m.data))
+	ids := make([]int, 0, len(m.mediaData))
+	entries := make([]flowMediaEntry, 0, len(m.mediaData))
 	types := map[string]int{}
 	firstID, lastID := 0, 0
 	firstDate, lastDate := 0, 0
 
-	for id, entry := range m.data {
+	for id, entry := range m.mediaData {
 		ids = append(ids, id)
 		entries = append(entries, entry)
 		types[entry.Type]++
@@ -787,6 +862,25 @@ func (m *mediaCollector) report() flowReportMedia {
 	}
 }
 
+func (m *mediaCollector) forwardIDs(mode string) []int {
+	switch mode {
+	case "all_messages":
+		out := make([]int, 0, len(m.allIDs))
+		for id := range m.allIDs {
+			out = append(out, id)
+		}
+		sort.Ints(out)
+		return out
+	default:
+		out := make([]int, 0, len(m.mediaData))
+		for id := range m.mediaData {
+			out = append(out, id)
+		}
+		sort.Ints(out)
+		return out
+	}
+}
+
 type flowReportMedia struct {
 	Total     int              `json:"total"`
 	Types     map[string]int   `json:"types"`
@@ -798,6 +892,15 @@ type flowReportMedia struct {
 	Entries   []flowMediaEntry `json:"entries"`
 }
 
+type flowReportForward struct {
+	Enabled   bool   `json:"enabled"`
+	To        string `json:"to,omitempty"`
+	Mode      string `json:"mode,omitempty"`
+	Attempted int    `json:"attempted"`
+	Forwarded int    `json:"forwarded"`
+	IDs       []int  `json:"ids,omitempty"`
+}
+
 func mediaType(m tg.MessageMediaClass) string {
 	switch m.(type) {
 	case *tg.MessageMediaPhoto:
@@ -807,6 +910,49 @@ func mediaType(m tg.MessageMediaClass) string {
 	default:
 		return "other"
 	}
+}
+
+func forwardMessages(ctx context.Context, c *telegram.Client, from peers.Peer, to peers.Peer, ids []int) ([]int, flowError) {
+	if len(ids) == 0 {
+		return nil, flowError{}
+	}
+
+	const batchSize = 100
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	forwarded := make([]int, 0, len(ids))
+	for start := 0; start < len(ids); start += batchSize {
+		end := start + batchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		batch := ids[start:end]
+		randomIDs := make([]int64, len(batch))
+		for i := range batch {
+			randomIDs[i] = r.Int63()
+		}
+
+		req := &tg.MessagesForwardMessagesRequest{
+			Silent:            false,
+			Background:        false,
+			WithMyScore:       false,
+			DropAuthor:        false,
+			DropMediaCaptions: false,
+			Noforwards:        false,
+			FromPeer:          from.InputPeer(),
+			ID:                batch,
+			RandomID:          randomIDs,
+			ToPeer:            to.InputPeer(),
+			TopMsgID:          0,
+			ScheduleDate:      0,
+			SendAs:            nil,
+		}
+		req.SetFlags()
+		if _, err := c.API().MessagesForwardMessages(ctx, req); err != nil {
+			return forwarded, flowError{category: "forward_rpc", err: err}
+		}
+		forwarded = append(forwarded, batch...)
+	}
+	return forwarded, flowError{}
 }
 
 func maxMessageID(messages []*tg.Message) int {
@@ -849,4 +995,8 @@ func printFlowSummary(r *flowReport, output string) {
 		fmt.Printf("Flow error: category=%s error=%s\n", r.ErrorCategory, r.Error)
 	}
 	fmt.Printf("Media types: %v\n", r.Media.Types)
+	if r.Forward.Enabled {
+		fmt.Printf("Forward: to=%s mode=%s attempted=%d forwarded=%d\n",
+			r.Forward.To, r.Forward.Mode, r.Forward.Attempted, r.Forward.Forwarded)
+	}
 }
