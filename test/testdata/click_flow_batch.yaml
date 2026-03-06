@@ -1,0 +1,38 @@
+target: latest_inbound_button_message
+bot_profile: batch_bot
+
+selectors:
+  - id: open_by_index
+    text: "10"
+  - id: open_content
+    text: "📋 查看内容"
+  - id: next_batch
+    text: "➡️ 点击查看下一组"
+  - id: next_page
+    text: "➡️ 下一页"
+
+actions:
+  mode: loop
+  initial:
+    - open_by_index
+    - open_content
+  loop:
+    - next_batch
+    - next_page
+  on_no_match: fail
+
+stop_conditions:
+  text_contains:
+    - "文件夹内容发送完成"
+    - "发送完成"
+  all_buttons_absent:
+    - next_batch
+    - next_page
+
+media_scope:
+  mode: since_start
+
+runtime:
+  max_steps: 30
+  timeout: 3m
+  poll_interval: 1s

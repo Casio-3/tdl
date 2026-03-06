@@ -1,0 +1,40 @@
+target: latest_inbound_button_message
+bot_profile: paging_bot
+
+selectors:
+  - id: p1
+    number: 1
+  - id: p2
+    number: 2
+  - id: p3
+    number: 3
+  - id: p4
+    number: 4
+  - id: p5
+    number: 5
+  - id: p6
+    number: 6
+  - id: p7
+    number: 7
+
+actions:
+  mode: sequence
+  sequence:
+    - p1
+    - p2
+    - p3
+    - p4
+    - p5
+    - p6
+    - p7
+  on_no_match: fail
+
+stop_conditions: {}
+
+media_scope:
+  mode: since_start
+
+runtime:
+  max_steps: 20
+  timeout: 3m
+  poll_interval: 1s
