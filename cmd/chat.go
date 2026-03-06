@@ -26,7 +26,7 @@ func NewChat() *cobra.Command {
 		GroupID: groupTools.ID,
 	}
 
-	cmd.AddCommand(NewChatList(), NewChatExport(), NewChatUsers())
+	cmd.AddCommand(NewChatList(), NewChatExport(), NewChatUsers(), NewChatClick())
 
 	return cmd
 }
@@ -147,5 +147,62 @@ func NewChatUsers() *cobra.Command {
 	cmd.Flags().StringVarP(&opts.Output, "output", "o", "tdl-users.json", "output JSON file path")
 	cmd.Flags().StringVarP(&opts.Chat, "chat", "c", "", "domain id (channels, supergroups, etc.)")
 	cmd.Flags().BoolVar(&opts.Raw, "raw", false, "export raw message struct of Telegram MTProto API, useful for debugging")
+	return cmd
+}
+
+func NewChatClick() *cobra.Command {
+	var opts chat.ClickOptions
+
+	cmd := &cobra.Command{
+		Use:   "click",
+		Short: "Click a bot inline keyboard button on a message",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := opts.Validate(); err != nil {
+				return err
+			}
+			return tRun(cmd.Context(), func(ctx context.Context, c *telegram.Client, kvd storage.Storage) error {
+				return chat.Click(logctx.Named(ctx, "click"), c, kvd, opts)
+			}, limiter)
+		},
+	}
+
+	cmd.Flags().StringVar(&opts.URL, "url", "", "telegram message link")
+	cmd.Flags().StringVarP(&opts.Chat, "chat", "c", "", "bot chat id or username, used with --latest-bot")
+	cmd.Flags().BoolVar(&opts.LatestBot, "latest-bot", false, "use latest incoming message in bot chat instead of --url")
+	cmd.Flags().BoolVar(&opts.Inspect, "inspect", false, "print latest bot message keyboard structure only (requires --latest-bot --chat)")
+	cmd.Flags().IntVar(&opts.Row, "row", 0, "1-based button row index")
+	cmd.Flags().IntVar(&opts.Col, "col", 0, "1-based button column index")
+	cmd.Flags().StringVar(&opts.Text, "text", "", "button text for matching")
+	cmd.Flags().StringVar(&opts.Data, "data", "", "override callback_data (UTF-8 text)")
+
+	cmd.AddCommand(NewChatClickFlow())
+
+	return cmd
+}
+
+func NewChatClickFlow() *cobra.Command {
+	var opts chat.ClickFlowOptions
+
+	cmd := &cobra.Command{
+		Use:   "flow",
+		Short: "Run YAML-configured multi-step bot button flow",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := opts.Validate(); err != nil {
+				return err
+			}
+			return tRun(cmd.Context(), func(ctx context.Context, c *telegram.Client, kvd storage.Storage) error {
+				return chat.ClickFlow(logctx.Named(ctx, "click-flow"), c, kvd, opts)
+			}, limiter)
+		},
+	}
+
+	cmd.Flags().StringVarP(&opts.Chat, "chat", "c", "", "bot chat id or username")
+	cmd.Flags().StringVar(&opts.Flow, "flow", "", "YAML flow config path")
+	cmd.Flags().StringVarP(&opts.Output, "output", "o", "tdl-click-flow.json", "flow JSON report path")
+	cmd.Flags().StringVar(&opts.ForwardTo, "forward-to", "", "target peer id/username for forwarding flow results")
+	cmd.Flags().IntVar(&opts.MaxSteps, "max-steps", 0, "override maximum click steps (0 means use flow/default)")
+	cmd.Flags().DurationVar(&opts.Timeout, "timeout", 0, "override total flow timeout (0 means use flow/default)")
+	cmd.Flags().DurationVar(&opts.PollInterval, "poll-interval", 0, "override poll interval between steps (0 means use flow/default)")
+
 	return cmd
 }
